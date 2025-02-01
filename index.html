@@ -1,0 +1,776 @@
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>千羽鶴</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+
+<body id="body">
+    <div id="WebGL-output"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.6/dat.gui.min.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+        let boid;
+        let creatureMeshGroup = new THREE.Group();
+        let creatureNum = 300;
+
+        let timeHistories = []; // 儲存歷史狀態
+        let isRewinding = false;
+
+        const japaneseColors = [
+            0xFFFFFF,
+            0xDA1A3D, // 紅（赤）Aka
+            0xFF7B9C, // 珊瑚粉（珊瑚色）Sangoseki
+            0xE5AAC4, // 薄紅（薄紅）Usubeni
+            0xF4B3C2, // 櫻色（桜色）Sakurairo
+            0x66327C, // 紫（紫）Murasaki
+            0x165E83, // 藍（青）Ao
+            0x274A78, // 瑠璃色（瑠璃色）Ruriiro
+            0x58B2DC, // 空色（空色）Sorairo
+            0x009250, // 綠（緑）Midori
+            0x7B8D42, // 若草色（若草色）Wakakusairo
+            0xFAB27B, // 杏色（杏色）Anzuiro
+            0xF7C242, // 山吹色（山吹色）Yamabukiiro
+            0xCB8347  // 茶色（茶色）Chairo
+        ];
+
+        const colorPalette = {
+            screenBg: 0x000000,
+            containerBox: 0x222222,
+            containerBall: 0x222222,
+            ambientLight: 0xaaaaaa,
+            directionalLight: 0xffffff
+        }
+
+        const getRandomNum = (max = 0, min = 0) => Math.floor(Math.random() * (max + 1 - min)) + min;
+
+        const render = () => {
+            orbitControls.update();
+
+            try {
+                if (!isRewinding) {
+                    boid.update();
+
+                    // 只在非倒退時記錄狀態
+                    if (boid && boid.creatures) {
+                        const frameState = [];
+                        for (let creature of boid.creatures) {
+                            if (creature && creature.mesh) {
+                                frameState.push({
+                                    position: creature.mesh.position.clone(),
+                                    quaternion: creature.mesh.quaternion.clone(),
+                                    velocity: creature.velocity.clone(),
+                                    acceleration: creature.acceleration.clone()
+                                });
+                            }
+                        }
+
+                        if (frameState.length === boid.creatures.length) {
+                            timeHistories.push(frameState);
+                            if (timeHistories.length > 600) {
+                                timeHistories.shift();
+                            }
+                        }
+                    }
+                } else {
+                    if (timeHistories.length > 0) {
+                        const previousState = timeHistories.pop();
+
+                        if (previousState && boid && boid.creatures) {
+                            if (previousState.length === boid.creatures.length) {
+                                for (let i = 0; i < boid.creatures.length; i++) {
+                                    const creature = boid.creatures[i];
+                                    const state = previousState[i];
+
+                                    if (creature && creature.mesh && state) {
+                                        creature.mesh.position.copy(state.position);
+                                        creature.mesh.quaternion.copy(state.quaternion);
+                                        creature.velocity.copy(state.velocity);
+                                        creature.acceleration.copy(state.acceleration);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        isRewinding = false;  // 當歷史記錄用完時停止倒退
+                    }
+                }
+            } catch (error) {
+                console.error('Render error:', error);
+                isRewinding = false;
+                timeHistories = []; // 發生錯誤時清空歷史記錄
+            }
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(render);
+        }
+
+        const onResize = () => {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(width, height);
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+        }
+
+        let gui = new dat.GUI({
+            closed: true,
+            width: 300
+        });
+
+        let guiControls = new function () {
+            this.container = 'ball';
+            this.creatureCount = 300;
+
+            this.diffuse = () => {
+                boid.setBoost();
+            }
+
+            this.timeRewind = () => {
+                isRewinding = true;
+            };
+
+            this.params = {
+                maxSpeed: 7,
+                seek: {
+                    maxForce: 0.03
+                },
+                align: {
+                    effectiveRange: 80,
+                    maxForce: 0.18
+                },
+                separate: {
+                    effectiveRange: 80,
+                    maxForce: 0.2
+                },
+                choesin: {
+                    effectiveRange: 160
+                }
+            }
+        }
+
+        gui.add(guiControls, 'creatureCount', 1, 1000).step(1).name('Crane Count').onChange((value) => {
+            creatureNum = value;
+            generateBoid();
+        });
+
+        gui.add(guiControls, 'container', ['ball', 'box']).onChange((e) => {
+            if (guiControls.container === 'ball') {
+                scene.remove(boxContainer.mesh);
+                scene.add(ballContainer.mesh);
+            } else if (guiControls.container === 'box') {
+                scene.remove(ballContainer.mesh);
+                scene.add(boxContainer.mesh);
+            }
+            generateBoid();
+        });
+
+        gui.add(guiControls, 'diffuse');
+
+        gui.add(guiControls, 'timeRewind').name('Time Rewind');
+
+        class BoxContainer {
+            constructor(width = 100, height = 100, depth = 100, color = 0xffffff) {
+                const geometry = new THREE.BoxGeometry(width, height, depth, 10, 10, 10);
+                const material = new THREE.MeshLambertMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.05,
+                    wireframe: false,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                });
+                this.mesh = new THREE.Mesh(geometry, material);
+            }
+        }
+
+        class BallContainer {
+            constructor(radius = 500, widthSegments = 10, heightSegments = 10, color = 0xffffff) {
+                const geometry = new THREE.SphereGeometry(radius, widthSegments, heightSegments);
+                const material = new THREE.MeshLambertMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.05,
+                    wireframe: false,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                });
+                this.mesh = new THREE.Mesh(geometry, material);
+            }
+        }
+
+        class Boid {
+            constructor(creatures = []) {
+                this.creatures = creatures;
+                this.params = guiControls.params;
+            }
+
+            update() {
+                this.creatures.forEach((creature) => {
+                    // boid
+                    creature.applyForce(this.align(creature));
+                    creature.applyForce(this.separate(creature));
+                    creature.applyForce(this.choesin(creature));
+
+                    // aboid container
+                    if (guiControls.container === 'ball') {
+                        creature.applyForce(this.avoidBallContainer(creature, ballContainer.mesh.geometry.parameters.radius));
+                    } else if (guiControls.container === 'box') {
+                        creature.applyForce(this.avoidBoxContainer(creature, boxContainer.mesh.geometry.parameters.width / 2,
+                            boxContainer.mesh.geometry.parameters.height / 2,
+                            boxContainer.mesh.geometry.parameters.depth / 2
+                        ));
+                    }
+
+                    creature.update();
+                });
+            }
+
+            setBoost() {
+                this.creatures.forEach((creature) => {
+                    if (creature.boost.length() === 0) {
+                        creature.boost.x = getRandomNum(10, -10) * 0.1;
+                        creature.boost.y = getRandomNum(10, -10) * 0.1;
+                        creature.boost.z = getRandomNum(10, -10) * 0.1;
+                        creature.boost.normalize();
+                        creature.boost.multiplyScalar(this.params.maxSpeed);
+                    }
+                });
+            }
+
+            seek(currentCreature, target = new THREE.Vector3()) {
+                const maxSpeed = this.params.maxSpeed;;
+                const maxForce = this.params.seek.maxForce;
+                const toGoalVector = new THREE.Vector3();
+                toGoalVector.subVectors(target, currentCreature.mesh.position);
+                const distance = toGoalVector.length();
+                toGoalVector.normalize();
+                toGoalVector.multiplyScalar(maxSpeed);
+                const steerVector = new THREE.Vector3();
+                steerVector.subVectors(toGoalVector, currentCreature.velocity);
+
+                // limit force
+                if (steerVector.length() > maxForce) {
+                    steerVector.clampLength(0, maxForce);
+                }
+
+                return steerVector;
+            }
+
+            align(currentCreature) {
+                const sumVector = new THREE.Vector3();
+                let cnt = 0;
+                const maxSpeed = this.params.maxSpeed;;
+                const maxForce = this.params.align.maxForce;
+                const effectiveRange = this.params.align.effectiveRange;
+                const steerVector = new THREE.Vector3();
+
+                this.creatures.forEach((creature) => {
+                    const dist = currentCreature.mesh.position.distanceTo(creature.mesh.position);
+                    if (dist > 0 && dist < effectiveRange) {
+                        sumVector.add(creature.velocity);
+                        cnt++;
+                    }
+                });
+
+                if (cnt > 0) {
+                    sumVector.divideScalar(cnt);
+                    sumVector.normalize();
+                    sumVector.multiplyScalar(maxSpeed);
+
+                    steerVector.subVectors(sumVector, currentCreature.velocity);
+
+                    // limit force
+                    if (steerVector.length() > maxForce) {
+                        steerVector.clampLength(0, maxForce);
+                    }
+                }
+
+                return steerVector;
+            }
+
+            separate(currentCreature) {
+                const sumVector = new THREE.Vector3();
+                let cnt = 0;
+                const maxSpeed = this.params.maxSpeed;
+                const maxForce = this.params.separate.maxForce;
+                const effectiveRange = this.params.separate.effectiveRange;
+                const steerVector = new THREE.Vector3();
+
+                this.creatures.forEach((creature) => {
+                    const dist = currentCreature.mesh.position.distanceTo(creature.mesh.position);
+                    if (dist > 0 && dist < effectiveRange) {
+                        let toMeVector = new THREE.Vector3();
+                        toMeVector.subVectors(currentCreature.mesh.position, creature.mesh.position);
+                        toMeVector.normalize();
+                        toMeVector.divideScalar(dist);
+                        sumVector.add(toMeVector);
+                        cnt++;
+                    }
+                });
+
+                if (cnt > 0) {
+                    sumVector.divideScalar(cnt);
+                    sumVector.normalize();
+                    sumVector.multiplyScalar(maxSpeed);
+
+                    steerVector.subVectors(sumVector, currentCreature.velocity);
+
+                    // limit force
+                    if (steerVector.length() > maxForce) {
+                        steerVector.clampLength(0, maxForce);
+                    }
+                }
+
+                return steerVector;
+            }
+
+            choesin(currentCreature) {
+                const sumVector = new THREE.Vector3();
+                let cnt = 0;
+                const effectiveRange = this.params.choesin.effectiveRange;
+                const steerVector = new THREE.Vector3();
+
+                this.creatures.forEach((creature) => {
+                    const dist = currentCreature.mesh.position.distanceTo(creature.mesh.position);
+                    if (dist > 0 && dist < effectiveRange) {
+                        sumVector.add(creature.mesh.position);
+                        cnt++;
+                    }
+                })
+
+                if (cnt > 0) {
+                    sumVector.divideScalar(cnt);
+                    steerVector.add(this.seek(currentCreature, sumVector));
+                }
+
+                return steerVector;
+            }
+
+            avoid(currentCreature, wall = new THREE.Vector3()) {
+                currentCreature.mesh.geometry.computeBoundingSphere();
+                const boundingSphere = currentCreature.mesh.geometry.boundingSphere;
+
+                const toMeVector = new THREE.Vector3();
+                toMeVector.subVectors(currentCreature.mesh.position, wall);
+
+                const distance = toMeVector.length() - boundingSphere.radius * 2;
+                const steerVector = toMeVector.clone();
+                steerVector.normalize();
+                steerVector.multiplyScalar(1 / (Math.pow(distance, 2)));
+                return steerVector;
+            }
+
+            avoidBoxContainer(currentCreature, rangeWidth = 80, rangeHeight = 80, rangeDepth = 80) {
+                const sumVector = new THREE.Vector3();
+                sumVector.add(this.avoid(currentCreature, new THREE.Vector3(rangeWidth, currentCreature.mesh.position.y, currentCreature.mesh.position.z)));
+                sumVector.add(this.avoid(currentCreature, new THREE.Vector3(-rangeWidth, currentCreature.mesh.position.y, currentCreature.mesh.position.z)));
+                sumVector.add(this.avoid(currentCreature, new THREE.Vector3(currentCreature.mesh.position.x, rangeHeight, currentCreature.mesh.position.z)));
+                sumVector.add(this.avoid(currentCreature, new THREE.Vector3(currentCreature.mesh.position.x, -rangeHeight, currentCreature.mesh.position.z)));
+                sumVector.add(this.avoid(currentCreature, new THREE.Vector3(currentCreature.mesh.position.x, currentCreature.mesh.position.y, rangeDepth)));
+                sumVector.add(this.avoid(currentCreature, new THREE.Vector3(currentCreature.mesh.position.x, currentCreature.mesh.position.y, -rangeDepth)));
+                sumVector.multiplyScalar(Math.pow(currentCreature.velocity.length(), 3));
+                return sumVector;
+            }
+
+            avoidBallContainer(currentCreature, radius = 500) {
+                currentCreature.mesh.geometry.computeBoundingSphere();
+                const boundingSphere = currentCreature.mesh.geometry.boundingSphere;
+
+                const distance = radius - currentCreature.mesh.position.length() - boundingSphere.radius;
+
+                const steerVector = currentCreature.mesh.position.clone();
+                steerVector.normalize();
+                steerVector.multiplyScalar(-1 / (Math.pow(distance, 2)));
+                steerVector.multiplyScalar(Math.pow(currentCreature.velocity.length(), 3));
+                return steerVector;
+            }
+        }
+
+        class Creature {
+            constructor(geometry) {
+                const color = new THREE.Color(japaneseColors[Math.floor(Math.random() * japaneseColors.length)]);
+
+                const material = new THREE.MeshLambertMaterial({
+                    wireframe: false,
+                    color: color
+                });
+
+                this.mesh = new THREE.Mesh(geometry, material);
+
+                this.mesh.scale.set(250, 250, 250);
+
+                const radius = getRandomNum(250, 500);
+                const theta = THREE.MathUtils.degToRad(getRandomNum(180));
+                const phi = THREE.MathUtils.degToRad(getRandomNum(360));
+
+                this.mesh.position.x = Math.sin(theta) * Math.cos(phi) * radius;
+                this.mesh.position.y = Math.sin(theta) * Math.sin(phi) * radius;
+                this.mesh.position.z = Math.cos(theta) * radius;
+
+                this.velocity = new THREE.Vector3(
+                    getRandomNum(100, -100) * 0.1,
+                    getRandomNum(100, -100) * 0.1,
+                    getRandomNum(100, -100) * 0.1
+                );
+                this.acceleration = new THREE.Vector3();
+                this.wonderTheta = 0;
+                this.maxSpeed = guiControls.params.maxSpeed;
+                this.boost = new THREE.Vector3();
+
+                this.history = [];
+            }
+
+            update() {
+                const maxSpeed = this.maxSpeed;
+
+                // boost
+                this.applyForce(this.boost);
+                this.boost.multiplyScalar(0.9);
+                if (this.boost.length() < 0.01) {
+                    this.boost = new THREE.Vector3();
+                }
+
+                // update velocity
+                this.velocity.add(this.acceleration);
+
+                // limit velocity
+                if (this.velocity.length() > maxSpeed) {
+                    this.velocity.clampLength(0, maxSpeed);
+                }
+
+                // update position
+                this.mesh.position.add(this.velocity);
+
+                // reset acc
+                this.acceleration.multiplyScalar(0);
+
+                // 使用四元數來處理旋轉
+                if (this.velocity.length() > 0) {
+                    // 創建一個向上的向量
+                    const up = new THREE.Vector3(0, 1, 0);
+
+                    // 計算目標方向
+                    const direction = this.velocity.clone().normalize();
+
+                    // 創建一個旋轉矩陣
+                    const matrix = new THREE.Matrix4();
+                    matrix.lookAt(new THREE.Vector3(0, 0, 0), direction, up);
+
+                    // 從矩陣建立四元數
+                    const quaternion = new THREE.Quaternion();
+                    quaternion.setFromRotationMatrix(matrix);
+
+                    const correction = new THREE.Quaternion();
+                    correction.setFromEuler(new THREE.Euler(
+                        0,
+                        Math.PI / 2,
+                        0
+                    ));
+                    quaternion.multiply(correction);
+
+                    // 應用旋轉
+                    this.mesh.quaternion.copy(quaternion);
+                }
+            }
+
+            recordState() {
+                this.history.push({
+                    position: this.mesh.position.clone(),
+                    quaternion: this.mesh.quaternion.clone(),
+                    velocity: this.velocity.clone(),     // 添加速度
+                    acceleration: this.acceleration.clone() // 添加加速度
+                });
+
+                if (this.history.length > MAX_HISTORY) {
+                    this.history.shift();
+                }
+            }
+
+            restoreState() {
+                if (this.history.length > 0) {
+                    const state = this.history.pop();
+                    this.mesh.position.copy(state.position);
+                    this.mesh.quaternion.copy(state.quaternion);
+                    this.velocity.copy(state.velocity);     // 恢復速度
+                    this.acceleration.copy(state.acceleration); // 恢復加速度
+                    return true;
+                }
+                return false;
+            }
+
+            applyForce(f) {
+                this.acceleration.add(f.clone());
+            }
+        }
+
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.Fog(colorPalette.screenBg, 4000, 18000); // 調整霧氣效果
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 10000);
+        camera.position.x = -2000;
+        camera.position.y = 2000;
+        camera.position.z = 2000;
+        camera.lookAt(scene.position);
+        scene.add(camera);
+
+        /* renderer
+        -------------------------------------------------------------*/
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setClearColor(new THREE.Color(colorPalette.screenBg));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+
+        const ambientLight = new THREE.AmbientLight(colorPalette.ambientLight);
+        ambientLight.intensity = 1.0;
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        /* Container
+        -------------------------------------------------------------*/
+        const isLongSideWidth = window.innerWidth > window.innerHeight;
+        const boxContainer = new BoxContainer(2300, 2300, 2300, colorPalette.boxContainer);
+        const ballContainer = new BallContainer(1500, 100, 100, colorPalette.ballContainer);
+
+        scene.add(ballContainer.mesh);
+
+        const generateBoid = () => {
+            const loader = new OBJLoader();
+
+            const objContent = `
+            v -0.03783497 -0.0458343 -0.01189188
+    v 0.02252427 -0.04409444 -0.006531283
+    v -0.09798329 -0.05600047 -0.01459286
+    v -0.007364303 0.003920078 -0.02835511
+    v 0.07844013 -0.04609811 -0.003356367
+    v -0.02754901 0.1671511 -0.151035
+    v -0.01107216 0.001664281 0.0283978
+    v 0.02527881 -0.03276062 -0.005786106
+    v 0.08458477 -0.04574835 -0.007084258
+    v -0.03480047 -0.04050958 -0.008117035
+    v -0.09886301 -0.05503309 -0.02044234
+    v -0.01879936 0.1008062 0.2159359
+    v -0.0223089 0.0388546 0.006297208
+    v 0.008856863 -0.01251578 -0.003178008
+    v -0.0217495 0.03781128 0.01115505
+    v -0.1087323 -0.04928672 -0.01010422
+    v -0.05138168 -0.01449335 0.003334157
+    v 0.08167464 -0.04463589 -0.01019373
+    v 0.07997367 -0.04031444 -0.009388074
+    v 0.08286786 -0.100263 -0.0192774
+    v 0.0793626 -0.04155374 -0.004582778
+    v 0.08404422 -0.119036 -0.02266866
+    v 0.01345339 -0.06651366 -0.008818179
+    v -0.02290833 -0.03828096 0.001601934
+    v -0.1058949 -0.0467391 -0.01136108
+    v -0.1060472 -0.04778838 -0.006474786
+    v -0.1086457 -0.1350348 -0.0197734
+    v -0.05380145 -0.07814395 -0.01136547
+    v -0.01220581 -0.04254079 -0.01189806
+    v -0.02208044 0.04021347 0.008845843
+    v 0.009069294 -0.01000631 -0.004669704
+    v 0.009506911 -0.01104581 0.0002014264
+    v -0.02164282 0.03917396 0.01371697
+    v -0.05130966 -0.01220202 0.0002860948
+    v -0.05087204 -0.01324153 0.005157225
+    v 0.03172892 -0.02674925 -0.009962905
+    v 0.07811156 -0.06575334 -0.008434594
+    v 0.04514611 -0.0783689 -0.01271329
+    v 0.05179819 -0.01966202 0.0008608252
+    v 0.1480269 0.0674963 0.003640696
+    v 0.01964149 -0.05011034 -0.01278542
+    v 0.146294 0.06502604 -0.0007363111
+    v 0.190777 0.0268786 -0.002651803
+    v 0.1464958 0.06474996 0.004251972
+    v 0.128059 0.04861987 0.002588317
+    v 0.1309067 0.0446595 -0.003789291
+    v -0.1066394 -0.05363441 -0.0092692
+    v -0.1069198 -0.05282283 -0.01419492
+    v -0.1293488 -0.000115633 -0.002427898
+    v -0.07976842 -0.0298934 -0.008955345
+    v -0.2443382 0.1340282 0.01908105
+    vn -0.09296291 0.297574 0.9501619
+    vn -0.03803805 0.393768 0.9184225
+    vn -0.1038729 0.3691998 0.9235268
+    vn 0.0836335 -0.5389035 -0.8382055
+    vn -0.09280238 0.3635496 0.9269409
+    vn 0.1242846 0.6059211 0.7857562
+    vn -0.2515041 0.5614257 0.7883824
+    vn -0.05920167 -0.07480007 0.9954396
+    vn 0.1560902 0.7740775 -0.613547
+    vn 0.01605909 0.1717834 -0.9850038
+    vn -0.003368816 0.6556426 -0.755064
+    vn 0.00223145 -0.8352308 0.5498949
+    vn -0.05801811 0.6719182 -0.7383494
+    vn 0.2609612 0.857834 -0.4427416
+    vn -0.2892709 0.8412941 -0.4566692
+    vn 0.03179185 0.5614902 -0.8268725
+    vn -0.8559117 -0.5169717 -0.01246403
+    vn 0.1090027 -0.5093668 0.853618
+    vn -0.009277537 0.9774442 0.2109899
+    vn 0.1118823 -0.2086595 0.9715675
+    vn -0.005046902 0.1877193 -0.9822098
+    vn 0.02016068 -0.1695105 0.9853221
+    vn 0.005387443 -0.201715 0.9794294
+    vn -0.2855791 0.1027085 0.9528355
+    vn -0.9908178 -0.02594548 -0.132691
+    vn 0.06370523 -0.1735406 0.9827641
+    vn -0.3583587 0.9140161 0.1901411
+    vn 0.0509628 -0.2396246 0.9695271
+    vn -0.07234474 0.1622784 -0.9840894
+    vn -0.06953107 -0.4229991 0.9034585
+    vn -0.04850722 0.2902616 -0.9557171
+    vn 0.7348531 -0.07570562 0.6739877
+    vn -0.9991546 0.03341047 -0.02395839
+    vn 0.9995079 -0.01376504 0.02818809
+    vn 0.004904498 -0.1508262 0.9885482
+    vn -0.009968787 0.09514787 -0.9954133
+    vn 0.5065665 -0.5823156 0.6358451
+    vn 0.005340435 0.008718855 0.9999478
+    vn -0.8534113 -0.5201069 -0.03432332
+    vn 0.1680403 -0.1576562 0.9730915
+    vn -0.01829051 0.9774786 0.2102409
+    vn 0.08752336 -0.2079036 0.9742258
+    vn -0.08752336 0.2079036 -0.9742258
+    vn 0.6290935 0.7553024 0.183738
+    vn 0.08610237 0.04501542 -0.9952688
+    vn -0.5123537 0.1632344 0.8431182
+    vn -0.2199094 -0.1960389 0.9556195
+    vn -0.07542459 -0.05067185 0.9958633
+    vn 0.03263107 0.1032273 -0.9941225
+    vn 0.6757922 0.7369698 0.01343935
+    vn -0.6604016 0.747817 0.06811213
+    vn 0.03387227 -0.1407693 0.9894628
+    vn -0.005962189 0.1526466 -0.9882628
+    vn -0.2615799 -0.8679504 0.4221823
+    vn -0.5932018 0.5379539 -0.59893
+    vn -0.921028 -0.3893209 -0.01170632
+    vn 0.6547301 -0.7389452 -0.1590238
+    vn 0.003185871 0.219179 -0.9756796
+    vn 0.07334862 -0.09614184 0.9926615
+    vn -0.0745555 0.09525561 -0.9926571
+    vn -0.07233128 0.09715904 -0.9926372
+    usemtl mat21
+    f 3//1 2//1 1//1
+    f 5//2 4//2 2//2
+    f 3//3 1//3 4//3
+    f 6//4 5//4 3//4
+    f 1//5 2//5 4//5
+    f 5//6 6//6 4//6
+    f 4//7 6//7 3//7
+    f 3//8 5//8 2//8
+    f 9//9 8//9 7//9
+    f 9//10 10//10 8//10
+    f 11//11 7//11 10//11
+    f 11//12 9//12 12//12
+    f 7//13 8//13 10//13
+    f 7//14 12//14 9//14
+    f 11//15 12//15 7//15
+    f 9//16 11//16 10//16
+    f 15//17 14//17 13//17
+    f 14//18 17//18 16//18
+    f 17//19 15//19 13//19
+    f 17//20 14//20 15//20
+    f 13//21 18//21 16//21
+    f 14//22 18//22 13//22
+    f 16//23 18//23 14//23
+    f 13//24 16//24 17//24
+    f 21//25 20//25 19//25
+    f 20//26 23//26 22//26
+    f 21//27 19//27 23//27
+    f 24//28 20//28 21//28
+    f 19//29 22//29 23//29
+    f 20//30 24//30 23//30
+    f 23//31 24//31 21//31
+    f 20//32 22//32 19//32
+    f 27//33 26//33 25//33
+    f 26//34 28//34 25//34
+    f 26//35 27//35 28//35
+    f 29//36 27//36 25//36
+    f 27//37 29//37 28//37
+    f 28//38 29//38 25//38
+    f 33//39 32//39 31//39 30//39
+    f 32//40 35//40 34//40 31//40
+    f 35//41 33//41 30//41 34//41
+    f 35//42 32//42 33//42
+    f 30//43 31//43 34//43
+    f 39//44 38//44 37//44 36//44
+    f 38//45 41//45 40//45 37//45
+    f 41//46 39//46 36//46
+    f 41//47 38//47 39//47
+    f 36//48 37//48 40//48
+    f 36//49 40//49 41//49
+    f 44//50 43//50 42//50
+    f 45//51 44//51 42//51
+    f 45//52 43//52 44//52
+    f 42//53 43//53 46//53
+    f 45//54 46//54 43//54
+    f 42//55 46//55 45//55
+    f 49//56 48//56 47//56
+    f 48//57 50//57 47//57
+    f 50//58 48//58 49//58
+    f 51//59 47//59 50//59
+    f 47//60 51//60 49//60
+    f 49//61 51//61 50//61
+        `;
+
+            const objModel = loader.parse(objContent);
+            const geometry = objModel.children[0].geometry;
+
+            const creatures = [];
+            scene.remove(creatureMeshGroup);
+            creatureMeshGroup = new THREE.Group();
+
+            for (let i = 0; i < creatureNum; i++) {
+                const creature = new Creature(geometry);
+                creatureMeshGroup.add(creature.mesh);
+                creatures.push(creature);
+            }
+
+            boid = new Boid(creatures);
+            scene.add(creatureMeshGroup);
+        }
+
+        generateBoid();
+
+        /* OrbitControls
+        -------------------------------------------------------------*/
+        const orbitControls = new OrbitControls(camera, renderer.domElement);
+        orbitControls.autoRotate = false;
+        orbitControls.enableDamping = true;
+        orbitControls.dampingFactor = 0.39;
+
+        window.addEventListener('resize', onResize);
+
+        document.getElementById('WebGL-output').appendChild(renderer.domElement);
+
+        render();
+    </script>
+</body>
+
+</html>
