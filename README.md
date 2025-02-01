@@ -95,8 +95,6 @@ One Thousand Origami Cranes is an interactive WebGL experience that simulates a 
 
 ## Credits
 
-Developed by **[Your Name]**.
-
 Inspired by the Japanese legend of the **Thousand Origami Cranes (千羽鶴)**, symbolizing hope, peace, and longevity.
 
 ---
