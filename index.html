@@ -16,19 +16,11 @@
     <div id="WebGL-output"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.6/dat.gui.min.js"></script>
-    <script type="importmap">
-    {
-        "imports": {
-            "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
-            "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
-        }
-    }
-    </script>
 
     <script type="module">
-        import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import * as THREE from 'https://esm.sh/three@0.159.0';
+        import { OrbitControls } from 'https://esm.sh/three@0.159.0/examples/jsm/controls/OrbitControls.js';
+        import { OBJLoader } from 'https://esm.sh/three@0.159.0/examples/jsm/loaders/OBJLoader.js';
 
         let boid;
         let creatureMeshGroup = new THREE.Group();
